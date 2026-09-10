@@ -42,11 +42,12 @@ function PulseCell({ k, v, u, accent }: { k: string; v: number; u: string; accen
 const CELL_BG = "color-mix(in srgb, var(--bg2) 66%, transparent)";
 
 /** A status cell that only lights up when it needs attention. */
-function StatusCell({ k, v, color }: { k: string; v: number; color: string }) {
+function StatusCell({ k, v, color, title }: { k: string; v: number; color: string; title?: string }) {
   const hot = v > 0;
   return (
     <div
       className="flex items-center gap-3 px-4 py-3 min-w-0"
+      title={title}
       style={{ background: hot ? `color-mix(in srgb, ${color} 11%, transparent)` : CELL_BG }}
     >
       <span
@@ -168,7 +169,8 @@ export function Kpis({
       {/* attention — cells glow only on problems; uptime lives inside the panel footer */}
       <motion.div {...enter} transition={{ delay: 0.1, type: "spring", stiffness: 300, damping: 26 }} className="panel">
         <div className="grid grid-cols-2 flex-1" style={{ background: "color-mix(in srgb, var(--primary) 9%, transparent)", gap: "1px" }}>
-          <StatusCell k="Failed" v={failed} color="var(--error)" />
+          <StatusCell k="Failed" v={failed} color="var(--error)"
+            title="Error events in the current window, across all sessions" />
           <StatusCell k="Waiting" v={waiting} color="var(--warning)" />
         </div>
         <div

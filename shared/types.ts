@@ -980,6 +980,13 @@ export interface OpenToolCall {
   /** What the evidence supports. Absent from a server too old to send it, which
    *  the client reads as `unknown` rather than as good news. */
   liveness?: Liveness;
+  /** How long this call has been open, measured with the SERVER's clock. The
+   *  client already has `since` and could subtract its own `Date.now()`, but
+   *  that puts a hard ceiling (see derive.ts's STALE_MS) at the mercy of
+   *  whatever skew exists between the two machines. Optional because a server
+   *  older than this doesn't send it; the client falls back to computing the
+   *  age itself from `since`. */
+  lastSeenAgeMs?: number;
 }
 
 /**

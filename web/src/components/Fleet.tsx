@@ -15,11 +15,16 @@ const STATUS: Record<string, { color: string; label: string }> = {
   waiting: { color: "var(--warning)", label: "Waiting" },
   errored: { color: "var(--error)", label: "Errored" },
   idle: { color: "var(--text4)", label: "Idle" },
+  // Same muted grey as idle/Stop, on purpose — this is not a fourth kind of
+  // busy, it's "nothing is coming back to tell this card anything else".
+  stale: { color: "var(--text4)", label: "Stale" },
 };
 // `waiting` above `errored`: an agent stopped on a question needs a person, and
 // a person is the only thing that will move it. One that hit an error may well
-// have recovered on its own by the time you look.
-const RANK: Record<string, number> = { working: 0, waiting: 1, errored: 2, idle: 3 };
+// have recovered on its own by the time you look. `stale` sorts last of all —
+// worse than idle, not merely quiet: idle asks nothing of you, stale is a
+// session nobody will hear from again.
+const RANK: Record<string, number> = { working: 0, waiting: 1, errored: 2, idle: 3, stale: 4 };
 // Within the idle pile, surface what still wants something from you.
 const OUTCOME_RANK: Record<AgentOutcome, number> = { unanswered: 0, faulted: 1, unclear: 2, settled: 3 };
 
@@ -191,7 +196,9 @@ export function Fleet({ agents, activeApp, onSelect }: { agents: AgentCard[]; ac
           (RANK[x.status] - RANK[y.status]) ||
           (OUTCOME_RANK[x.outcome] - OUTCOME_RANK[y.outcome]) ||
           y.lastSeen - x.lastSeen);
-        const live = list.filter((a) => a.status !== "idle").length;
+        // Stale is excluded alongside idle: a session nothing will ever answer
+        // again is not "live" just because its last real status wasn't idle.
+        const live = list.filter((a) => a.status !== "idle" && a.status !== "stale").length;
         const subs = list.reduce((s, a) => s + a.subagents, 0);
         return { app, list, live, subs, lastSeen: Math.max(...list.map((a) => a.lastSeen)) };
       })
@@ -212,7 +219,9 @@ export function Fleet({ agents, activeApp, onSelect }: { agents: AgentCard[]; ac
             Filtering: {activeApp}
           </span>
         ) : (
-          <span className="text-[10px] t-dim2">{agents.length} live · {groups.length} projects</span>
+          <span className="text-[10px] t-dim2">
+            {agents.filter((a) => a.status !== "stale").length} live · {groups.length} projects
+          </span>
         )
       }
     >

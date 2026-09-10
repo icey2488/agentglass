@@ -49,6 +49,19 @@
  * Which is why `unknown` is a first-class answer here and is rendered as one.
  * Claiming a hang we cannot see is how the current thresholds lost trust, and
  * repeating that with better wording would be no improvement.
+ *
+ * ## No pid, on purpose
+ *
+ * A `process.kill(pid, 0)` check would settle `lost` vs `stuck` outright for a
+ * dead CLI — no more guessing from transcript growth. It isn't here because
+ * there is no pid to check: Claude Code's hook payload (read in
+ * hooks/send_event.py) carries `session_id`, `transcript_path`, `cwd`,
+ * `hook_event_name` and friends, never a pid, and the OTel connectors don't add
+ * one either. The hook script's OWN pid is briefly visible to it, but that
+ * process exits the instant the hook finishes — recording it would make every
+ * session read as dead a second after its first event. So this stays
+ * evidence-based; a pid column ships if and when Claude Code's hooks start
+ * sending one, not by inventing a number that means something else.
  */
 import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
@@ -240,6 +253,11 @@ export function withEvidence(calls: OpenToolCall[], now = Date.now()): OpenToolC
       // a new place.
       evidenceKind: best ? best[1] : "none",
       liveness: classify(c, { transcriptAt, targetAt, dirAt }, now),
+      // Computed with THIS process's clock, the same one `now` came from — so
+      // a client applying its own hard staleness ceiling (derive.ts's
+      // STALE_MS) can use this instead of `now() - c.since` and not have a
+      // client/server clock skew turn a fresh call stale or vice versa.
+      lastSeenAgeMs: now - c.since,
     };
   });
 }

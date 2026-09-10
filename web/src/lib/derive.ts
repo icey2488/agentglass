@@ -5,7 +5,7 @@ import { sessionWorktree } from "./worktree.ts";
 import { ctxLimitOf } from "./contextWindow.ts";
 import type { AgentKind } from "./agents.ts";
 
-export type AgentStatus = "working" | "waiting" | "errored" | "idle";
+export type AgentStatus = "working" | "waiting" | "errored" | "idle" | "stale";
 
 /**
  * How a session *ended* — a separate question from whether it is *running*.
@@ -106,6 +106,29 @@ export interface AgentCard {
 
 const STALL_MS = 20_000;
 const IDLE_MS = 5 * 60_000;
+/**
+ * Optional override for STALE_MS, read the same way demo.ts reads VITE_DEMO:
+ * a plain `import.meta.env` lookup, which Vite and `bun test` both populate
+ * (empty, under bun test) so this can never throw for want of a build tool.
+ */
+const STALE_MS_OVERRIDE = Number(
+  (import.meta as { env?: Record<string, string | undefined> }).env?.VITE_STALE_MS
+);
+// The hard wall-clock ceiling nothing else in the ladder can talk its way past.
+//
+// A hard-killed `claude` process leaves behind exactly two things: a session
+// row with `ended_at` still null, and whatever the mtime-based evidence in
+// evidence.ts last saw — which, for an open tool call, can look encouragingly
+// "working" forever, because nothing ever comes along to contradict it. The
+// rest of this ladder answers "what does the evidence say", which is the
+// right question for telling a slow build from a hung one; it has no answer
+// at all for "is anyone still there", and past twenty silent minutes that is
+// the only question left. Chosen well above IDLE_MS (silence a slow turn can
+// produce routinely) and TOOL_RUN_MAX_MS's neighbourhood, so this is a
+// backstop for the dead, not a tighter version of either.
+export const STALE_MS = Number.isFinite(STALE_MS_OVERRIDE) && STALE_MS_OVERRIDE > 0
+  ? STALE_MS_OVERRIDE
+  : 20 * 60_000;
 // The backstop for an open call nothing can vouch for. It used to be the whole
 // answer — "open for thirty minutes, therefore lost" — which dropped genuinely
 // long jobs off the fleet while they were still working. Now it only applies
@@ -342,17 +365,24 @@ export function deriveAgents(events: WatchEvent[], openTools: OpenToolCall[] = [
     // taken — don't resurrect it as running.
     const closed = (postBySessTool.get(`${s.session_id}|${s.tool_name}`) ?? []).some((t) => t >= s.since);
     if (closed) continue;
+    // Prefer the server's own clock for how long this call has been open, when
+    // it sent one — see evidence.ts's `lastSeenAgeMs`. Expressed back as a
+    // timestamp on the client's own timeline so every later `now - x` in this
+    // function keeps working unchanged; skew between the two clocks would
+    // otherwise nudge a call across TOOL_RUN_MAX_MS, or the stale ceiling
+    // below, early or late depending on which way it leans.
+    const effSince = s.lastSeenAgeMs != null ? now - s.lastSeenAgeMs : s.since;
     const key = `${s.source_app}:${s.session_id}`;
     let a = map.get(key);
     if (!a) {
       a = blankCard(key, s.source_app, s.session_id, null);
-      a.lastSeen = s.since;
+      a.lastSeen = effSince;
       a.lastType = "PreToolUse";
       map.set(key, a);
     }
     if (s.since >= a.runningSince) {
       a.runningTool = s.tool_name;
-      a.runningSince = s.since;
+      a.runningSince = effSince;
       a.evidenceAt = s.evidenceAt ?? null;
       a.evidenceKind = s.evidenceKind ?? null;
       // A server too old to send a verdict says nothing, which is `unknown` —
@@ -388,6 +418,12 @@ export function deriveAgents(events: WatchEvent[], openTools: OpenToolCall[] = [
       a.tools = Math.max(a.tools, r.tool_count);
     }
     const since = now - a.lastSeen;
+    const ended = a.lastType === "Stop" || a.lastType === "SessionEnd";
+    // The hard ceiling. No evidence, mtime or open pair gets a vote once a
+    // session has been silent this long — see STALE_MS above. `ended` is
+    // checked first and wins regardless: a session that told us it was done
+    // is settled, not merely quiet.
+    const stale = !ended && since > STALE_MS;
     // A session that ended can't still be running a tool, whatever pair we
     // think is open; and an open pair past the ceiling is lost, not long.
     // A session that ended cannot still be running a tool, whatever pair we
@@ -397,7 +433,7 @@ export function deriveAgents(events: WatchEvent[], openTools: OpenToolCall[] = [
     // calls the evidence cannot speak to, and no longer applies to one we can
     // see making progress.
     const unvouched = a.liveness !== "working";
-    if (a.lastType === "Stop" || a.lastType === "SessionEnd" || a.liveness === "lost"
+    if (ended || stale || a.liveness === "lost"
       || (a.runningTool && unvouched && now - a.runningSince >= TOOL_RUN_MAX_MS)) {
       a.runningTool = null;
     }
@@ -407,7 +443,9 @@ export function deriveAgents(events: WatchEvent[], openTools: OpenToolCall[] = [
     // keeps re-triggering its alert. An open tool call is the one exception:
     // a long build emits no events while it runs, and reading that silence as
     // idle is exactly the slow-vs-hung false positive to avoid.
-    if ((since >= IDLE_MS && !running) || a.lastType === "Stop" || a.lastType === "SessionEnd") a.status = "idle";
+    if (ended) a.status = "idle";
+    else if (stale) a.status = "stale";
+    else if (since >= IDLE_MS && !running) a.status = "idle";
     else if (a.lastType === "PermissionRequest" || a.lastType === "Notification") a.status = "waiting";
     // Errored only on a RECENT error, not a lifetime count — one transient
     // failure early shouldn't paint a now-healthy agent red for its whole run.
@@ -415,6 +453,7 @@ export function deriveAgents(events: WatchEvent[], openTools: OpenToolCall[] = [
     else if (since < STALL_MS || running) a.status = "working";
     else a.status = "idle";
     a.outcome = deriveOutcome(a);
+    if (a.status === "stale") a.lastAction = `stale · no events for ${fmtMs(since)}`;
     // While a tool call is open, its live duration is the most informative
     // thing the card can say — better than the stale "PreToolUse · Bash".
     if (a.status === "working" && running) {

@@ -5,8 +5,8 @@
 // and keep well clear of the thresholds (STALL 20s, IDLE 5m) so a few ms of
 // drift between the two Date.now() reads can never flip a case.
 import { test, expect } from "bun:test";
-import { deriveAgents, deriveAlerts, buildTitles, buildRollups } from "../src/lib/derive.ts";
-import type { WatchEvent } from "../../shared/types.ts";
+import { deriveAgents, deriveAlerts, buildTitles, buildRollups, STALE_MS } from "../src/lib/derive.ts";
+import type { WatchEvent, OpenToolCall } from "../../shared/types.ts";
 
 const now = Date.now();
 const ev = (over: Partial<WatchEvent> = {}): WatchEvent => ({
@@ -297,4 +297,74 @@ test("the card keeps the directory and project it last reported", () => {
   ]);
   expect(card.cwd).toBe("/home/x/code/app-wt");
   expect(card.project).toBe("/home/x/code/app");
+});
+
+// ---------------------------------------------------------------------------
+// The hard staleness ceiling.
+//
+// A hard-killed `claude` process leaves a session with no ended_at and no more
+// events, ever. Before STALE_MS the ladder had no wall-clock backstop at all —
+// an open tool call with encouraging-looking evidence, or simply a status that
+// isn't `idle` yet by IDLE_MS's own 5-minute clock, could read as "still
+// working" indefinitely. These pin the ladder's actual order: ended beats
+// stale beats everything else, and stale overrides evidence and open calls
+// alike.
+// ---------------------------------------------------------------------------
+
+test("(a) 25 minutes silent with no end event is stale", () => {
+  const c = only([ev({ timestamp: now - 25 * 60_000 })]);
+  expect(c.status).toBe("stale");
+  expect(c.runningTool).toBeNull();
+  expect(c.lastAction).toContain("stale");
+});
+
+test("(b) 3 minutes silent is unaffected — still the pre-existing idle read, not stale", () => {
+  // Well under STALE_MS (20m); this is the same "idle" the ladder already gave
+  // past STALL_MS (20s) with nothing open. The point is that it did NOT
+  // become "stale" — that ceiling is 20 minutes away.
+  expect(only([ev({ timestamp: now - 3 * 60_000 })]).status).toBe("idle");
+});
+
+test("(c) an ended session wins over staleness, not the other way around", () => {
+  const c = only([
+    ev({ hook_event_type: "PostToolUse", timestamp: now - 40 * 60_000 }),
+    ev({ hook_event_type: "Stop", timestamp: now - 39 * 60_000 }),
+  ]);
+  expect(c.status).toBe("idle");
+});
+
+test("(d) a 40-minute-old open tool call with 40-minute-old last_seen is stale, not running", () => {
+  // Same shape as "an open tool call keeps a quiet session working" above, but
+  // now well past STALE_MS: the open PreToolUse used to read as "still
+  // working" forever because nothing in the ladder checked its wall-clock age.
+  const c = only([ev({ hook_event_type: "PreToolUse", tool_use_id: "t-open", timestamp: now - 40 * 60_000 })]);
+  expect(c.status).toBe("stale");
+  expect(c.runningTool).toBeNull();
+});
+
+test("stale beats a permission request nobody is coming back to answer", () => {
+  const c = only([ev({ hook_event_type: "PermissionRequest", tool_name: "Bash", timestamp: now - 25 * 60_000 })]);
+  expect(c.status).toBe("stale");
+});
+
+test("openTools seeded from the server also go stale past the ceiling", () => {
+  const openTools: OpenToolCall[] = [{
+    session_id: "s1", source_app: "app", tool_name: "Bash", since: now - 40 * 60_000,
+  }];
+  const c = only([], openTools);
+  expect(c.status).toBe("stale");
+  expect(c.runningTool).toBeNull();
+});
+
+test("a server-supplied lastSeenAgeMs is trusted over the client's own clock", () => {
+  // Simulate client/server skew: `since` alone would compute an open duration
+  // just under STALE_MS, but the server says (via lastSeenAgeMs) the call has
+  // really been open well past it.
+  const openTools: OpenToolCall[] = [{
+    session_id: "s1", source_app: "app", tool_name: "Bash",
+    since: now - (STALE_MS - 60_000),
+    lastSeenAgeMs: STALE_MS + 60_000,
+  }];
+  const c = only([], openTools);
+  expect(c.status).toBe("stale");
 });

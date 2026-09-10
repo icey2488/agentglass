@@ -9,7 +9,8 @@
 // numbers, so every case below is a claim that can be argued with rather than a
 // machine that happened to behave.
 import { describe, expect, test } from "bun:test";
-import { classify, watchesDirectory } from "../src/evidence.ts";
+import { classify, watchesDirectory, withEvidence } from "../src/evidence.ts";
+import type { OpenToolCall } from "../../shared/types.ts";
 
 const NOW = 1_700_000_000_000;
 const ago = (ms: number) => NOW - ms;
@@ -109,5 +110,33 @@ describe("telling a lost pair from a hang", () => {
     // The measurement that shaped all of this: the transcript does not grow
     // while a command runs. A rule built on it would call every long build hung.
     expect(classify({ tool_name: "Bash", since: ago(min(15)) }, { ...none, transcriptAt: ago(min(16)) }, NOW)).toBe("unknown");
+  });
+});
+
+describe("lastSeenAgeMs — the server's own clock, attached for the client", () => {
+  // A client applying a hard staleness ceiling (web's STALE_MS) to an open
+  // call has two ways to get its age: subtract its own Date.now() from
+  // `since`, or read this. The two diverge exactly when the client's clock is
+  // wrong, which is the case this field exists to route around — so the pinned
+  // behaviour is simply that it equals `now - since` from the SERVER's `now`,
+  // regardless of what the caller believes the time is.
+  test("equals now - since, computed with the server's now", () => {
+    const call: OpenToolCall = {
+      session_id: "no-such-session", source_app: "app", tool_name: "WebFetch", since: ago(min(45)),
+    };
+    const [withEv] = withEvidence([call], NOW);
+    expect(withEv.lastSeenAgeMs).toBe(min(45));
+  });
+
+  test("present even when no evidence source is readable at all", () => {
+    // A session with no transcript on disk (never scanned, already pruned) and
+    // a tool with no local target still gets an age — this doesn't ride on the
+    // same lookups evidenceAt does.
+    const call: OpenToolCall = {
+      session_id: "unknown-session-id", source_app: "app", tool_name: "mcp__x__y", since: ago(min(3)),
+    };
+    const [withEv] = withEvidence([call], NOW);
+    expect(withEv.evidenceKind).toBe("none");
+    expect(withEv.lastSeenAgeMs).toBe(min(3));
   });
 });

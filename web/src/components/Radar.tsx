@@ -9,8 +9,9 @@ const STATUS_COLOR: Record<string, string> = {
   waiting: "var(--warning)",
   errored: "var(--error)",
   idle: "var(--text4)",
+  stale: "var(--text4)",
 };
-const STATUS_ORDER: AgentStatus[] = ["working", "waiting", "errored", "idle"];
+const STATUS_ORDER: AgentStatus[] = ["working", "waiting", "errored", "idle", "stale"];
 /**
  * A finished blip, tinted by how it finished.
  *
