@@ -268,7 +268,7 @@ function blankCard(key: string, source_app: string, session_id: string, model_na
     runningSince: 0,
     evidenceAt: null,
     evidenceKind: null,
-    liveness: "working",
+    liveness: "unknown",
     ctxTokens: 0,
     ctxTs: 0,
     ctxLimit: 200_000,

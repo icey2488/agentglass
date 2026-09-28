@@ -88,6 +88,27 @@ test("a Post that closes the Pre stops it running", () => {
   expect(c.runningTool).toBeNull();
 });
 
+test("an open call the server no longer lists is not vouched for", () => {
+  /*
+   * A dashboard tab still holds the unmatched PreToolUse of a session whose CLI
+   * died mid-call: no Post, no Stop, nothing after it, and the server's open
+   * list has dropped the call, so no verdict ever arrives. The card used to
+   * keep blankCard's default `liveness: "working"`, which vouched for the call
+   * and switched off the thirty-minute backstop, so it read as working for
+   * days. With no verdict it is `unknown`, and the backstop writes it off.
+   */
+  const pre = ev({ hook_event_type: "PreToolUse", tool_name: "PowerShell", tool_use_id: "t-dead", timestamp: now - 31 * 60_000 });
+  const c = only([pre], []);
+  expect(c.liveness).toBe("unknown");
+  expect(c.runningTool).toBeNull();
+  expect(c.status).not.toBe("working");
+
+  // While the server still lists the call and vouches for it, it stays working.
+  const listed = only([pre], [{ source_app: "app", session_id: "s1", tool_name: "PowerShell", since: pre.timestamp, liveness: "working" }]);
+  expect(listed.status).toBe("working");
+  expect(listed.runningTool).toBe("PowerShell");
+});
+
 test("roll-ups sum across a session; subagents are tallied by type", () => {
   const c = only([
     ev({ hook_event_type: "PostToolUse", cost_usd: 0.02, input_tokens: 100, output_tokens: 50, timestamp: now - 5000 }),
